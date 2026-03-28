@@ -1,0 +1,71 @@
+@import "tailwindcss";
+
+/* ============================================
+   WIAL Design Token System — Red & White theme
+   Matches wial.org brand: crimson red primary,
+   gold/olive accents, white backgrounds
+   ============================================ */
+
+@theme inline {
+  /* --- Brand Colors (from WIAL logo) --- */
+  --color-wial-red: #CC0033;
+  --color-wial-red-light: #E6194B;
+  --color-wial-red-dark: #A30029;
+  --color-wial-gold: #B8A030;
+  --color-wial-gold-light: #D4C050;
+  --color-wial-gold-dark: #8A7820;
+
+  /* --- Keep blue for legacy references --- */
+  --color-wial-blue: #CC0033;
+  --color-wial-blue-light: #E6194B;
+  --color-wial-blue-dark: #A30029;
+
+  /* --- Neutral Palette --- */
+  --color-wial-white: #ffffff;
+  --color-wial-gray-50: #f8f9fa;
+  --color-wial-gray-100: #f1f3f5;
+  --color-wial-gray-200: #e5e7eb;
+  --color-wial-gray-300: #d1d5db;
+  --color-wial-gray-400: #9ca3af;
+  --color-wial-gray-500: #6b7280;
+  --color-wial-gray-600: #4b5563;
+  --color-wial-gray-700: #374151;
+  --color-wial-gray-800: #1f2937;
+  --color-wial-gray-900: #111827;
+
+  /* --- Semantic Colors --- */
+  --color-wial-success: #16a34a;
+  --color-wial-warning: #d97706;
+  --color-wial-error: #dc2626;
+  --color-wial-info: #2563eb;
+
+  /* --- Certification Badge Colors --- */
+  --color-cert-calc: #2563eb;
+  --color-cert-palc: #16a34a;
+  --color-cert-salc: #B8A030;
+  --color-cert-malc: #7c3aed;
+
+  --color-background: #ffffff;
+  --color-foreground: #111827;
+
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+/* Base reset */
+*, *::before, *::after { box-sizing: border-box; }
+html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; }
+
+body {
+  margin: 0;
+  background: var(--color-background);
+  color: var(--color-foreground);
+  font-family: var(--font-sans);
+  line-height: 1.6;
+  overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+img, video, svg { max-width: 100%; height: auto; display: block; }
+h1, h2, h3, h4, h5, h6, p { overflow-wrap: break-word; }
+:focus-visible { outline: 2px solid var(--color-wial-red); outline-offset: 2px; }
