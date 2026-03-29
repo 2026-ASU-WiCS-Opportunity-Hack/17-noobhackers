@@ -402,6 +402,29 @@ This plan implements the WIAL multi-site chapter platform in incremental steps: 
   - Verify CDK synth succeeds
   - Ensure all tests pass, ask the user if questions arise.
 
+- [x] 23. Final checkpoint - Ensure all tests pass
+  - Run all backend property tests (Hypothesis) and unit tests (pytest)
+  - Run all frontend tests (Jest + fast-check)
+  - Verify CDK synth succeeds
+  - Ensure all tests pass, ask the user if questions arise.
+
+- [x] 24. Chapter Lead creation and provisioning end-to-end flow fixes
+  - [x] 24.1 Fix Super Admin chapter creation page to call real API
+    - Update `frontend/app/admin/chapters/new/page.tsx` to call `POST /chapters` via API instead of mock `setSubmitted(true)`
+    - Attach Cognito JWT token to the request
+    - Display real API response (chapterId, url) on success, or descriptive error on failure
+    - _Requirements: 2.1, 2.2, 2.5, 2.6_
+
+  - [x] 24.2 Add duplicate chapter prevention in provisioning backend
+    - Update `backend/lambda/provisioning/handler.py` `create_chapter()` to check if a chapter with the same slug already exists in DynamoDB (query GSI1 on slug) before creating
+    - Return a descriptive error if slug is already taken
+    - _Requirements: 2.4, 2.6_
+
+  - [x] 24.3 Fix user creation to store Cognito sub as cognitoUserId
+    - Update `backend/lambda/auth/handler.py` `create_user()` to extract the real Cognito `sub` from the `admin_create_user` response and use it as the `cognitoUserId` in the Users table PK, instead of using the email
+    - This ensures the post-authentication trigger (which syncs by `sub`) matches the record created by the Super Admin
+    - _Requirements: 3.6, 3.3_
+
 ## Notes
 
 - Tasks marked with `*` are optional and can be skipped for faster MVP

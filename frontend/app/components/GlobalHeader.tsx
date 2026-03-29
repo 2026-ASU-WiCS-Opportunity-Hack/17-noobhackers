@@ -1,8 +1,7 @@
 "use client";
 
 /**
- * Global header — red & white theme matching wial.org branding.
- * Red top accent bar, WIAL logo, clean navigation.
+ * Global header — shows logged-in user info in navbar.
  */
 
 import Link from "next/link";
@@ -19,13 +18,34 @@ const NAV_LINKS = [
   { href: "/contact", label: "Contact" },
 ];
 
+const ROLE_LABELS: Record<string, string> = {
+  Super_Admin: "Admin",
+  Chapter_Lead: "Chapter Lead",
+  Content_Creator: "Editor",
+  Coach: "Coach",
+};
+
+const ROLE_COLORS: Record<string, string> = {
+  Super_Admin: "bg-wial-red text-white",
+  Chapter_Lead: "bg-wial-gold text-wial-gray-900",
+  Content_Creator: "bg-wial-info text-white",
+  Coach: "bg-cert-palc text-white",
+};
+
 export default function GlobalHeader() {
-  const { isAuthenticated, logout } = useAuth();
+  const { isAuthenticated, user, logout } = useAuth();
   const [open, setOpen] = useState(false);
+
+  const dashboardLink = user?.role === "Super_Admin"
+    ? "/admin/dashboard"
+    : user?.role === "Chapter_Lead"
+    ? "/chapter-admin/dashboard"
+    : user?.role === "Coach"
+    ? "/profile"
+    : "/admin/dashboard";
 
   return (
     <header className="sticky top-0 z-50 w-full bg-white shadow-sm">
-      {/* Red accent bar at top */}
       <div className="h-1 w-full bg-wial-red" />
 
       <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-4 sm:px-6">
@@ -44,17 +64,41 @@ export default function GlobalHeader() {
               {l.label}
             </Link>
           ))}
-          {isAuthenticated ? (
-            <>
-              <Link href="/admin/dashboard" className="ml-2 px-3 py-2 text-[13px] font-medium uppercase tracking-wide text-wial-red">
-                Dashboard
+
+          {isAuthenticated && user ? (
+            <div className="ml-3 flex items-center gap-2">
+              {user.role === "Coach" && (
+                <Link href="/renew" className="rounded-lg bg-wial-red/10 px-3 py-1.5 text-[12px] font-semibold text-wial-red hover:bg-wial-red/20">
+                  Renew Membership
+                </Link>
+              )}
+              <Link
+                href={dashboardLink}
+                className="flex items-center gap-2 rounded-lg bg-wial-gray-50 px-3 py-1.5 hover:bg-wial-gray-100"
+              >
+                {/* User avatar */}
+                <div className="flex h-7 w-7 items-center justify-center rounded-full bg-wial-red text-[10px] font-bold text-white">
+                  {user.email.charAt(0).toUpperCase()}
+                </div>
+                <div className="hidden sm:block">
+                  <p className="text-xs font-medium text-wial-gray-900 leading-tight">{user.email}</p>
+                  <span className={`inline-block rounded px-1.5 py-0 text-[10px] font-bold ${ROLE_COLORS[user.role] ?? "bg-wial-gray-200 text-wial-gray-700"}`}>
+                    {ROLE_LABELS[user.role] ?? user.role}
+                  </span>
+                </div>
               </Link>
-              <button onClick={logout} className="ml-1 rounded bg-wial-gray-100 px-3 py-1.5 text-[13px] font-medium text-wial-gray-600 hover:bg-wial-gray-200">
+              <button
+                onClick={logout}
+                className="rounded bg-wial-gray-100 px-2.5 py-1.5 text-[12px] font-medium text-wial-gray-600 hover:bg-wial-gray-200"
+              >
                 Sign Out
               </button>
-            </>
+            </div>
           ) : (
-            <Link href="/login" className="ml-3 rounded bg-wial-red px-4 py-1.5 text-[13px] font-medium uppercase tracking-wide text-white hover:bg-wial-red-light">
+            <Link
+              href="/login"
+              className="ml-3 rounded bg-wial-red px-4 py-1.5 text-[13px] font-medium uppercase tracking-wide text-white hover:bg-wial-red-light"
+            >
               Login
             </Link>
           )}
@@ -84,10 +128,27 @@ export default function GlobalHeader() {
             </Link>
           ))}
           <div className="my-2 border-t border-wial-gray-100" />
-          {isAuthenticated ? (
-            <button onClick={() => { logout(); setOpen(false); }} className="block w-full py-2.5 text-left text-sm font-medium text-wial-gray-700">
-              Sign Out
-            </button>
+
+          {isAuthenticated && user ? (
+            <>
+              <div className="flex items-center gap-2 py-2">
+                <div className="flex h-8 w-8 items-center justify-center rounded-full bg-wial-red text-xs font-bold text-white">
+                  {user.email.charAt(0).toUpperCase()}
+                </div>
+                <div>
+                  <p className="text-sm font-medium text-wial-gray-900">{user.email}</p>
+                  <span className={`inline-block rounded px-1.5 py-0 text-[10px] font-bold ${ROLE_COLORS[user.role] ?? "bg-wial-gray-200"}`}>
+                    {ROLE_LABELS[user.role] ?? user.role}
+                  </span>
+                </div>
+              </div>
+              <Link href={dashboardLink} onClick={() => setOpen(false)} className="block py-2.5 text-sm font-medium text-wial-red">
+                Dashboard
+              </Link>
+              <button onClick={() => { logout(); setOpen(false); }} className="block w-full py-2.5 text-left text-sm font-medium text-wial-gray-700">
+                Sign Out
+              </button>
+            </>
           ) : (
             <Link href="/login" onClick={() => setOpen(false)} className="block rounded bg-wial-red py-2.5 text-center text-sm font-medium text-white">
               Login
