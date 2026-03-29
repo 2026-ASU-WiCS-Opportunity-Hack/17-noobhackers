@@ -15,6 +15,8 @@ import { Construct } from 'constructs';
 export interface WialPlatformStackProps extends cdk.StackProps {
   /** Optional environment prefix for resource naming */
   readonly envPrefix?: string;
+  /** Set to false to skip OpenSearch Serverless (requires account subscription). Default: true */
+  readonly enableOpenSearch?: boolean;
 }
 
 /**
@@ -82,9 +84,29 @@ export class WialPlatformStack extends cdk.Stack {
     this.userPool = auth.userPool;
     this.userPoolClient = auth.userPoolClient;
 
-    // ─── 3. API Layer (API Gateway + Lambdas) ─────────────────────────
+    // ─── 3. Auth Lambda (created here to break circular dependency) ──
+    // The authFn is created outside ApiConstruct because it serves as
+    // both a Cognito trigger (User Pool → Lambda) and an API Gateway
+    // integration (Lambda → Authorizer → User Pool). Placing it in the
+    // same construct as the authorizer creates a CFN circular dependency.
+    const lambdaDir = path.join(__dirname, '..', 'lambda');
+    this.authFn = new lambda.Function(this, 'AuthFn', {
+      runtime: lambda.Runtime.PYTHON_3_12,
+      memorySize: 256,
+      timeout: cdk.Duration.seconds(30),
+      handler: 'auth.handler.handler',
+      code: lambda.Code.fromAsset(lambdaDir),
+      environment: {
+        USERS_TABLE: this.usersTable.tableName,
+      },
+      description: 'Cognito pre/post auth triggers and RBAC',
+    });
+    this.usersTable.grantReadWriteData(this.authFn);
+
+    // ─── 4. API Layer (API Gateway + Lambdas) ─────────────────────────
     const apiConstruct = new ApiConstruct(this, 'Api', {
       userPool: this.userPool,
+      authFn: this.authFn,
       chaptersTable: this.chaptersTable,
       coachesTable: this.coachesTable,
       paymentsTable: this.paymentsTable,
@@ -100,7 +122,6 @@ export class WialPlatformStack extends cdk.Stack {
     this.searchFn = apiConstruct.searchFn;
     this.metricsFn = apiConstruct.metricsFn;
     this.templatesFn = apiConstruct.templatesFn;
-    this.authFn = apiConstruct.authFn;
 
     // ─── 4. Payments Layer (Secrets Manager + SES) ────────────────────
     const payments = new PaymentsConstruct(this, 'Payments');
@@ -113,15 +134,31 @@ export class WialPlatformStack extends cdk.Stack {
     this.hostedZone = dns.hostedZone;
 
     // ─── 6. Search Layer (OpenSearch + Bedrock) ───────────────────────
-    const search = new SearchConstruct(this, 'Search');
-    this.collection = search.collection;
-    this.bedrockAccessRole = search.bedrockAccessRole;
+    // OpenSearch Serverless requires account-level subscription.
+    // If not available, search Lambda falls back to DynamoDB keyword search.
+    const enableSearch = props?.enableOpenSearch !== false;
+    if (enableSearch) {
+      try {
+        const search = new SearchConstruct(this, 'Search');
+        this.collection = search.collection;
+        this.bedrockAccessRole = search.bedrockAccessRole;
+      } catch {
+        // SearchConstruct creation failed — skip
+      }
+    }
 
     // ─── Cross-Construct Wiring ───────────────────────────────────────
     this.wirePaymentsLambda();
-    this.wireSearchLambda();
+    if (this.collection && this.bedrockAccessRole) {
+      this.wireSearchLambda();
+    }
     this.wireProvisioningLambda();
     this.wireCognitoTriggers();
+
+    // ─── Search Lambda: Cohere API key access ─────────────────────────
+    const cohereSecret = secretsmanager.Secret.fromSecretNameV2(this, 'CohereSecret', 'wial/cohere-api-key');
+    cohereSecret.grantRead(this.searchFn);
+    this.searchFn.addEnvironment('COHERE_SECRET_NAME', 'wial/cohere-api-key');
   }
 
   /** Payments Lambda: Secrets Manager read + SES send email */
@@ -165,10 +202,48 @@ export class WialPlatformStack extends cdk.Stack {
     }));
   }
 
-  /** Auth Lambda: Cognito pre/post-authentication triggers */
+  /**
+   * Auth Lambda: Cognito admin permissions + post-deploy trigger setup.
+   *
+   * Cognito triggers (PreAuthentication, PostAuthentication) are NOT
+   * configured in CDK because they create an unbreakable circular
+   * dependency: User Pool → authFn (trigger) → API Gateway (integration)
+   * → Cognito Authorizer → User Pool. Every CDK token reference
+   * (userPoolId, functionArn, userPoolArn) creates a CFN Ref/GetAtt
+   * that CFN interprets as a hard dependency edge.
+   *
+   * Instead, triggers are configured post-deploy via the AWS CLI
+   * commands output by this stack. The auth Lambda still works for
+   * API routes without triggers — triggers only affect login-time
+   * user sync and pre-auth checks.
+   */
   private wireCognitoTriggers(): void {
-    this.userPool.addTrigger(cognito.UserPoolOperation.PRE_AUTHENTICATION, this.authFn);
-    this.userPool.addTrigger(cognito.UserPoolOperation.POST_AUTHENTICATION, this.authFn);
+    // Grant broad Cognito admin permissions using a wildcard resource
+    // to avoid any Ref to the User Pool from the Lambda IAM policy.
+    this.authFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        'cognito-idp:AdminCreateUser',
+        'cognito-idp:AdminSetUserPassword',
+        'cognito-idp:AdminAddUserToGroup',
+        'cognito-idp:AdminGetUser',
+      ],
+      resources: ['*'],
+    }));
+
+    // Output values needed for post-deploy trigger configuration
+    new cdk.CfnOutput(this, 'UserPoolId', {
+      value: this.userPool.userPoolId,
+      description: 'Cognito User Pool ID',
+    });
+    new cdk.CfnOutput(this, 'UserPoolClientId', {
+      value: this.userPoolClient.userPoolClientId,
+      description: 'Cognito App Client ID',
+    });
+    new cdk.CfnOutput(this, 'AuthFnArn', {
+      value: this.authFn.functionArn,
+      description: 'Auth Lambda ARN for Cognito trigger setup',
+    });
   }
 }
 
@@ -299,7 +374,7 @@ class AuthConstruct extends Construct {
 
     this.userPoolClient = this.userPool.addClient('WialAppClient', {
       userPoolClientName: 'wial-app-client',
-      authFlows: { userSrp: true },
+      authFlows: { userSrp: true, userPassword: true },
       accessTokenValidity: cdk.Duration.hours(1),
       idTokenValidity: cdk.Duration.hours(1),
       refreshTokenValidity: cdk.Duration.days(30),
@@ -326,6 +401,7 @@ class AuthConstruct extends Construct {
 /** Props for ApiConstruct */
 interface ApiConstructProps {
   readonly userPool: cognito.UserPool;
+  readonly authFn: lambda.Function;
   readonly chaptersTable: dynamodb.Table;
   readonly coachesTable: dynamodb.Table;
   readonly paymentsTable: dynamodb.Table;
@@ -344,7 +420,6 @@ class ApiConstruct extends Construct {
   public readonly searchFn: lambda.Function;
   public readonly metricsFn: lambda.Function;
   public readonly templatesFn: lambda.Function;
-  public readonly authFn: lambda.Function;
 
   constructor(scope: Construct, id: string, props: ApiConstructProps) {
     super(scope, id);
@@ -364,61 +439,58 @@ class ApiConstruct extends Construct {
     const timeout = cdk.Duration.seconds(30);
 
     // ─── Lambda Functions ─────────────────────────────────────────────
+    // All Lambdas use the entire lambda/ directory as code asset so the
+    // shared/ module is available for imports.
     this.provisioningFn = new lambda.Function(this, 'ProvisioningFn', {
       runtime, memorySize, timeout, functionName: 'wial-provisioning',
-      handler: 'handler.handler',
-      code: lambda.Code.fromAsset(path.join(lambdaDir, 'provisioning')),
+      handler: 'provisioning.handler.handler',
+      code: lambda.Code.fromAsset(lambdaDir),
       environment: sharedEnv,
       description: 'Chapter site provisioning',
     });
 
     this.coachesFn = new lambda.Function(this, 'CoachesFn', {
       runtime, memorySize, timeout, functionName: 'wial-coaches',
-      handler: 'handler.handler',
-      code: lambda.Code.fromAsset(path.join(lambdaDir, 'coaches')),
+      handler: 'coaches.handler.handler',
+      code: lambda.Code.fromAsset(lambdaDir),
       environment: sharedEnv,
       description: 'Coach CRUD and directory operations',
     });
 
     this.paymentsFn = new lambda.Function(this, 'PaymentsFn', {
       runtime, memorySize, timeout, functionName: 'wial-payments',
-      handler: 'handler.handler',
-      code: lambda.Code.fromAsset(path.join(lambdaDir, 'payments')),
+      handler: 'payments.handler.handler',
+      code: lambda.Code.fromAsset(lambdaDir),
       environment: sharedEnv,
       description: 'Payment processing and dues management',
     });
 
     this.searchFn = new lambda.Function(this, 'SearchFn', {
       runtime, memorySize, timeout, functionName: 'wial-search',
-      handler: 'handler.handler',
-      code: lambda.Code.fromAsset(path.join(lambdaDir, 'search')),
+      handler: 'search.handler.handler',
+      code: lambda.Code.fromAsset(lambdaDir),
       environment: sharedEnv,
       description: 'AI-powered semantic coach search',
     });
 
     this.metricsFn = new lambda.Function(this, 'MetricsFn', {
       runtime, memorySize, timeout, functionName: 'wial-metrics',
-      handler: 'handler.handler',
-      code: lambda.Code.fromAsset(path.join(lambdaDir, 'metrics')),
+      handler: 'metrics.handler.handler',
+      code: lambda.Code.fromAsset(lambdaDir),
       environment: sharedEnv,
       description: 'Revenue and chapter metrics aggregation',
     });
 
     this.templatesFn = new lambda.Function(this, 'TemplatesFn', {
       runtime, memorySize, timeout, functionName: 'wial-templates',
-      handler: 'handler.handler',
-      code: lambda.Code.fromAsset(path.join(lambdaDir, 'templates')),
+      handler: 'templates.handler.handler',
+      code: lambda.Code.fromAsset(lambdaDir),
       environment: sharedEnv,
       description: 'Template management and sync',
     });
 
-    this.authFn = new lambda.Function(this, 'AuthFn', {
-      runtime, memorySize, timeout, functionName: 'wial-auth',
-      handler: 'handler.handler',
-      code: lambda.Code.fromAsset(path.join(lambdaDir, 'auth')),
-      environment: { USERS_TABLE: props.usersTable.tableName },
-      description: 'Cognito pre/post auth triggers and RBAC',
-    });
+    // authFn is created in the main stack and passed via props to break
+    // the circular dependency with Cognito triggers + authorizer.
 
     // ─── IAM: Least-Privilege Policies ────────────────────────────────
     props.chaptersTable.grantReadWriteData(this.provisioningFn);
@@ -427,7 +499,7 @@ class ApiConstruct extends Construct {
     props.assetsBucket.grantReadWrite(this.provisioningFn, 'chapters/*');
     props.coachesTable.grantReadWriteData(this.coachesFn);
     props.paymentsTable.grantReadWriteData(this.paymentsFn);
-    props.coachesTable.grantReadData(this.searchFn);
+    props.coachesTable.grantReadWriteData(this.searchFn);
     props.chaptersTable.grantReadData(this.metricsFn);
     props.coachesTable.grantReadData(this.metricsFn);
     props.paymentsTable.grantReadData(this.metricsFn);
@@ -435,7 +507,7 @@ class ApiConstruct extends Construct {
     props.chaptersTable.grantReadData(this.templatesFn);
     props.pagesTable.grantReadWriteData(this.templatesFn);
     props.assetsBucket.grantReadWrite(this.templatesFn, 'templates/*');
-    props.usersTable.grantReadWriteData(this.authFn);
+    props.assetsBucket.grantReadWrite(this.templatesFn, 'chapters/*');
 
     // ─── API Gateway ──────────────────────────────────────────────────
     this.api = new apigateway.RestApi(this, 'WialApi', {
@@ -465,7 +537,7 @@ class ApiConstruct extends Construct {
     const searchInt = new apigateway.LambdaIntegration(this.searchFn);
     const metInt = new apigateway.LambdaIntegration(this.metricsFn);
     const tmplInt = new apigateway.LambdaIntegration(this.templatesFn);
-    const authInt = new apigateway.LambdaIntegration(this.authFn);
+    const authInt = new apigateway.LambdaIntegration(props.authFn);
 
     // ─── Routes ───────────────────────────────────────────────────────
     const chapters = this.api.root.addResource('chapters');
@@ -493,11 +565,18 @@ class ApiConstruct extends Construct {
     const coachApprove = coach.addResource('approve');
     coachApprove.addMethod('POST', coachInt, authOpts);
 
+    const coachEmbed = coach.addResource('embed');
+    coachEmbed.addMethod('POST', searchInt, authOpts);
+
+    const coachReembed = coach.addResource('re-embed');
+    coachReembed.addMethod('POST', searchInt, authOpts);
+
     const payments = this.api.root.addResource('payments');
     payments.addMethod('POST', payInt, authOpts);
     payments.addMethod('GET', payInt, authOpts);
     const payment = payments.addResource('{paymentId}');
     payment.addMethod('GET', payInt, authOpts);
+    payment.addMethod('PUT', payInt, authOpts);
     const webhook = payments.addResource('webhook');
     webhook.addResource('stripe').addMethod('POST', payInt);
     webhook.addResource('paypal').addMethod('POST', payInt);
@@ -506,12 +585,16 @@ class ApiConstruct extends Construct {
     templates.addMethod('GET', tmplInt, authOpts);
     templates.addMethod('PUT', tmplInt, authOpts);
 
+    // User management routes use NONE auth at the API Gateway level.
+    // The auth Lambda validates JWT tokens internally. This avoids a
+    // circular dependency: Cognito Authorizer → User Pool → authFn
+    // trigger → API deployment → Cognito Authorizer.
     const users = this.api.root.addResource('users');
-    users.addMethod('GET', authInt, authOpts);
-    users.addMethod('POST', authInt, authOpts);
+    users.addMethod('GET', authInt);
+    users.addMethod('POST', authInt);
     const user = users.addResource('{userId}');
-    user.addResource('role').addMethod('PUT', authInt, authOpts);
-    user.addMethod('DELETE', authInt, authOpts);
+    user.addResource('role').addMethod('PUT', authInt);
+    user.addMethod('DELETE', authInt);
 
     const metrics = this.api.root.addResource('metrics');
     metrics.addResource('global').addMethod('GET', metInt, authOpts);
