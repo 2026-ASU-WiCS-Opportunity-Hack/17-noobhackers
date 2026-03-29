@@ -440,8 +440,8 @@ def create_user(event: Dict[str, Any]) -> Dict[str, Any]:
                 UserAttributes=[
                     {"Name": "email", "Value": email},
                     {"Name": "email_verified", "Value": "true"},
-                    {"Name": "given_name", "Value": sanitized.get("givenName", "User")},
-                    {"Name": "family_name", "Value": sanitized.get("familyName", "")},
+                    {"Name": "given_name", "Value": body.get("givenName", "Chapter")},
+                    {"Name": "family_name", "Value": body.get("familyName", "Lead")},
                 ],
                 TemporaryPassword="TempPass123!",
                 MessageAction="SUPPRESS",
@@ -458,12 +458,20 @@ def create_user(event: Dict[str, Any]) -> Dict[str, Any]:
             # Set permanent password if provided
             password = body.get("password", "")
             if password:
-                cognito_client.admin_set_user_password(
-                    UserPoolId=user_pool_id,
-                    Username=email,
-                    Password=password,
-                    Permanent=True,
-                )
+                try:
+                    cognito_client.admin_set_user_password(
+                        UserPoolId=user_pool_id,
+                        Username=email,
+                        Password=password,
+                        Permanent=True,
+                    )
+                except cognito_client.exceptions.InvalidPasswordException as pwd_exc:
+                    raise ValidationError(
+                        "Password does not meet requirements: "
+                        "min 12 characters, uppercase, lowercase, digit, and symbol"
+                    )
+                except Exception as pwd_exc:
+                    raise ValidationError(f"Failed to set password: {str(pwd_exc)}")
 
             # Add to role group
             role_to_group = {

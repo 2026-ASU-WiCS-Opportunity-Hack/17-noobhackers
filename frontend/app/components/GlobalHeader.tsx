@@ -2,12 +2,27 @@
 
 /**
  * Global header — shows logged-in user info in navbar.
+ * Hides itself on chapter pages (/{chapter}/*) where the chapter
+ * layout provides its own navigation.
  */
 
 import Link from "next/link";
 import { useState } from "react";
+import { usePathname } from "next/navigation";
 import { useAuth } from "../context/AuthContext";
 import WialLogo from "./WialLogo";
+
+/** Known top-level routes that are NOT chapter slugs */
+const NON_CHAPTER_ROUTES = new Set([
+  "about", "certification", "coaches", "resources", "events", "contact",
+  "login", "profile", "admin", "chapter-admin", "become-affiliate", "renew",
+]);
+
+function isChapterPath(pathname: string): boolean {
+  const segments = pathname.split("/").filter(Boolean);
+  if (segments.length === 0) return false;
+  return !NON_CHAPTER_ROUTES.has(segments[0]);
+}
 
 const NAV_LINKS = [
   { href: "/about", label: "Action Learning" },
@@ -35,6 +50,10 @@ const ROLE_COLORS: Record<string, string> = {
 export default function GlobalHeader() {
   const { isAuthenticated, user, logout } = useAuth();
   const [open, setOpen] = useState(false);
+  const pathname = usePathname();
+
+  // Hide global header on chapter pages — chapter layout has its own nav
+  if (isChapterPath(pathname)) return null;
 
   const dashboardLink = user?.role === "Super_Admin"
     ? "/admin/dashboard"

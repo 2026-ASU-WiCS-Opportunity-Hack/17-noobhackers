@@ -127,10 +127,10 @@ function UsersContent() {
 
           <label className="block">
             <span className="text-sm font-medium text-wial-gray-700">Password *</span>
-            <input type="password" required minLength={8} value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })}
-              placeholder="Min 8 characters"
+            <input type="password" required minLength={12} value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })}
+              placeholder="Min 12 chars, upper+lower+digit+symbol"
               className="mt-1 w-full rounded-lg border border-wial-gray-200 px-4 py-2.5 text-sm focus:border-wial-red focus:outline-none" />
-            <p className="mt-1 text-xs text-wial-gray-400">The user will log in with this password. Share it securely.</p>
+            <p className="mt-1 text-xs text-wial-gray-400">Min 12 characters with uppercase, lowercase, digit, and symbol (e.g. @#$!). Share securely.</p>
           </label>
 
           {form.role === "Chapter_Lead" && (
