@@ -16,6 +16,7 @@ import WialLogo from "./WialLogo";
 const NON_CHAPTER_ROUTES = new Set([
   "about", "certification", "coaches", "resources", "events", "contact",
   "login", "profile", "admin", "chapter-admin", "become-affiliate", "renew",
+  "my-learning", "pay", "onboard",
 ]);
 
 function isChapterPath(pathname: string): boolean {

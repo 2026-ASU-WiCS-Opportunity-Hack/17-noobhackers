@@ -11,6 +11,7 @@ import { usePathname } from "next/navigation";
 const NON_CHAPTER_ROUTES = new Set([
   "about", "certification", "coaches", "resources", "events", "contact",
   "login", "profile", "admin", "chapter-admin", "become-affiliate", "renew",
+  "my-learning", "pay", "onboard",
 ]);
 
 export default function GlobalFooter() {
