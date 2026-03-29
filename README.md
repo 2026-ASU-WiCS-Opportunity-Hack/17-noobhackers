@@ -35,9 +35,9 @@ WIAL is a global non-profit certifying Action Learning Coaches across 20+ countr
 | Database | Amazon DynamoDB (6 tables, GSIs) |
 | File Storage | Amazon S3 (templates, assets, coach photos) |
 | Payments | Stripe SDK, PayPal SDK |
-| AI Search | Amazon Bedrock (embeddings), Cohere Embed v3 |
+| AI Search | Cohere Embed Multilingual v3.0 (embeddings + cosine similarity in DynamoDB) |
+| AI Query Parsing | Cohere Command-R (natural language → structured filters) |
 | Email | Amazon SES (receipts, reminders) |
-| DNS | Amazon Route 53 (subdomain management) |
 | Secrets | AWS Secrets Manager |
 
 ## Architecture
@@ -59,8 +59,8 @@ WIAL is a global non-profit certifying Action Learning Coaches across 20+ countr
     ┌─────▼──────────▼──────────▼──────────▼─────┐
     │  DynamoDB (6 tables)  │  S3 (assets)       │
     │  Cognito (auth)       │  SES (email)       │
-    │  Secrets Manager      │  Route 53 (DNS)    │
-    │  Bedrock (AI search)  │  OpenSearch (vectors)│
+    │  Secrets Manager      │  Cohere API        │
+    │  (Stripe/PayPal keys) │  (AI embeddings)   │
     └────────────────────────────────────────────┘
 ```
 
