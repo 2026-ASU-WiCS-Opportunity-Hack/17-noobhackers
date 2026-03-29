@@ -23,7 +23,7 @@ const DUE_LABELS: Record<DueType, string> = {
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "/api/";
 
-export default function PaymentForm({ chapterId }: { chapterId?: string }) {
+export default function PaymentForm({ chapterId, onSuccess }: { chapterId?: string; onSuccess?: () => void }) {
   const { user } = useAuth();
   const [method, setMethod] = useState<PaymentMethod>("stripe");
   const [dueType, setDueType] = useState<DueType>("student_enrollment");
@@ -60,6 +60,7 @@ export default function PaymentForm({ chapterId }: { chapterId?: string }) {
         setResult({ success: false, error: data.error?.message ?? "Payment failed" });
       } else {
         setResult({ success: true, paymentId: data.paymentId, amount: data.amount });
+        onSuccess?.();
       }
     } catch {
       setResult({ success: false, error: "Unable to reach payment service. Check your connection." });

@@ -60,7 +60,7 @@ export default function CoachDirectoryPage() {
   const handleSearch = async (query: string) => {
     setIsSearching(true); setIsFallback(false); setSearchActive(true); setPage(1);
     try {
-      const res = await fetch(`${API_URL}coaches/search?q=${encodeURIComponent(query)}&limit=50`);
+      const res = await fetch(`${API_URL}coaches/search?q=${encodeURIComponent(query)}&limit=10`);
       if (res.ok) {
         const data = await res.json();
         setIsFallback(data.fallback ?? false);

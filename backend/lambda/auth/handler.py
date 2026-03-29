@@ -156,12 +156,31 @@ def post_authentication(event: Dict[str, Any]) -> Dict[str, Any]:
     user_attributes = event.get("request", {}).get("userAttributes", {})
     cognito_user_id = user_attributes.get("sub", "")
     email = user_attributes.get("email", "")
+
+    # Try multiple sources for group membership:
+    # 1. groupConfiguration.groupsToOverride (standard trigger field)
+    # 2. Look up groups from Cognito directly (most reliable)
     groups = event.get("request", {}).get("groupConfiguration", {}).get("groupsToOverride", []) or []
+
+    if not groups:
+        # Fetch groups from Cognito directly — groupsToOverride can be
+        # empty in post-authentication triggers
+        user_pool_id = os.environ.get("USER_POOL_ID", "")
+        if user_pool_id and email:
+            try:
+                cognito_client = boto3.client("cognito-idp")
+                resp = cognito_client.admin_list_groups_for_user(
+                    UserPoolId=user_pool_id,
+                    Username=email,
+                )
+                groups = [g["GroupName"] for g in resp.get("Groups", [])]
+            except Exception as exc:
+                _safe_log("Failed to fetch user groups from Cognito", {"error": str(exc)})
 
     role = _resolve_role(groups)
     now = _now_iso()
 
-    _safe_log("Post-authentication trigger", {"cognitoUserId": cognito_user_id, "role": role})
+    _safe_log("Post-authentication trigger", {"cognitoUserId": cognito_user_id, "role": role, "groups": groups})
 
     try:
         # Upsert user record — preserve assignedChapters if they exist
@@ -369,6 +388,40 @@ def authorize_chapter_access(
 # ---------------------------------------------------------------------------
 # User Management API Handlers
 # ---------------------------------------------------------------------------
+
+
+def get_my_profile(event: Dict[str, Any]) -> Dict[str, Any]:
+    """GET /users/me — return the calling user's own profile."""
+    claims = _extract_claims(event)
+    if not claims:
+        error = AuthorizationError("Missing or invalid token")
+        error.status_code = 401
+        raise error
+
+    cognito_user_id = claims.get("sub", "")
+    if not cognito_user_id:
+        error = AuthorizationError("Missing or invalid token")
+        error.status_code = 401
+        raise error
+
+    try:
+        response = users_table.get_item(
+            Key={"PK": f"USER#{cognito_user_id}", "SK": "PROFILE"}
+        )
+        item = response.get("Item")
+        if not item:
+            return {"email": claims.get("email", ""), "role": "Coach", "assignedChapters": []}
+
+        return {
+            "cognitoUserId": item.get("cognitoUserId"),
+            "email": item.get("email"),
+            "role": item.get("role"),
+            "assignedChapters": item.get("assignedChapters", []),
+            "status": item.get("status", "active"),
+        }
+    except Exception as exc:
+        _safe_log("Get my profile failed", {"error": str(exc)})
+        return {"email": claims.get("email", ""), "role": "Coach", "assignedChapters": []}
 
 
 def list_users(event: Dict[str, Any]) -> Dict[str, Any]:
@@ -645,6 +698,11 @@ def handler(event: dict, context: Any = None) -> Dict[str, Any]:
     user_id = path_params.get("userId")
 
     try:
+        # GET /users/me — get own profile (any authenticated user)
+        if http_method == "GET" and path.rstrip("/") == "/users/me":
+            result = get_my_profile(event)
+            return _json_response(200, result)
+
         # GET /users — list users
         if http_method == "GET" and path.rstrip("/") == "/users":
             result = list_users(event)

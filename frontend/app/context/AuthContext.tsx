@@ -108,6 +108,23 @@ function buildUserFromToken(idToken: string): AuthUser | null {
   };
 }
 
+const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "/api/";
+
+/** Fetch user's assigned chapters from the Users table. */
+async function fetchUserProfile(idToken: string): Promise<string[]> {
+  try {
+    // Use /users/me endpoint — works for any authenticated user
+    const res = await fetch(`${API_URL}users/me`, {
+      headers: { Authorization: `Bearer ${idToken}` },
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (data.assignedChapters?.length > 0) return data.assignedChapters;
+    }
+  } catch {}
+  return [];
+}
+
 // ---------------------------------------------------------------------------
 // Provider
 // ---------------------------------------------------------------------------
@@ -189,6 +206,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           return { success: false, error: "Failed to parse authentication token." };
         }
 
+        // Fetch assigned chapters from backend for role-based redirect
+        if (authUser.role === "Chapter_Lead" || authUser.role === "Super_Admin" || authUser.role === "Coach") {
+          authUser.assignedChapters = await fetchUserProfile(idToken);
+        }
+
         setUser(authUser);
         localStorage.setItem("wial_auth_user", JSON.stringify(authUser));
         return { success: true };
@@ -203,6 +225,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const logout = useCallback(() => {
     setUser(null);
     localStorage.removeItem("wial_auth_user");
+    if (typeof window !== "undefined") {
+      window.location.href = "/";
+    }
   }, []);
 
   const hasRole = useCallback(

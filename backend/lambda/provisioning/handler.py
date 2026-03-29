@@ -13,8 +13,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+import random
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
@@ -31,6 +32,7 @@ from shared.validators import validate_input
 
 CHAPTERS_TABLE = os.environ.get("CHAPTERS_TABLE", "wial-chapters")
 PAGES_TABLE = os.environ.get("PAGES_TABLE", "wial-pages")
+PAYMENTS_TABLE = os.environ.get("PAYMENTS_TABLE", "wial-payments")
 ASSETS_BUCKET = os.environ.get("ASSETS_BUCKET", "wial-platform-assets")
 URL_MODE = os.environ.get("URL_MODE", "subdomain")  # "subdomain" | "subdirectory"
 HOSTED_ZONE_ID = os.environ.get("HOSTED_ZONE_ID", "")
@@ -46,6 +48,7 @@ route53_client = boto3.client("route53")
 
 chapters_table = dynamodb.Table(CHAPTERS_TABLE)
 pages_table = dynamodb.Table(PAGES_TABLE)
+payments_table = dynamodb.Table(PAYMENTS_TABLE)
 
 # ---------------------------------------------------------------------------
 # Page title mapping for the 6 core pages
@@ -109,6 +112,45 @@ def _safe_log(message: str, extra: Optional[Dict[str, Any]] = None) -> None:
 # ---------------------------------------------------------------------------
 # Core operations
 # ---------------------------------------------------------------------------
+
+
+def _seed_dummy_payments(chapter_id: str, slug: str) -> None:
+    """Seed sample payment records for a newly created chapter."""
+    payer_names = ["affiliate-admin", "training-dept", "hr-director", "education-office"]
+    try:
+        for _ in range(20):
+            payment_id = str(uuid.uuid4())
+            due_type = random.choice(["student_enrollment", "coach_certification"])
+            quantity = random.randint(1, 8)
+            unit_amount = 50 if due_type == "student_enrollment" else 30
+            total = quantity * unit_amount
+            method = random.choice(["stripe", "paypal"])
+            status = random.choice(["succeeded", "succeeded", "succeeded", "pending", "overdue"])
+            days_ago = random.randint(1, 60)
+            created_at = (datetime.now(timezone.utc) - timedelta(days=days_ago)).isoformat()
+
+            item: Dict[str, Any] = {
+                "PK": f"PAYMENT#{payment_id}",
+                "SK": "RECORD",
+                "paymentId": payment_id,
+                "chapterId": chapter_id,
+                "payerEmail": f"{random.choice(payer_names)}@{slug}.wial.org",
+                "paymentMethod": method,
+                "dueType": due_type,
+                "quantity": quantity,
+                "unitAmount": unit_amount,
+                "totalAmount": total,
+                "currency": "USD",
+                "status": status,
+                "remindersSent": 0,
+                "createdAt": created_at,
+            }
+            if status == "succeeded":
+                item["receiptSentAt"] = created_at
+            payments_table.put_item(Item=item)
+        _safe_log("Dummy payments seeded", {"chapterId": chapter_id, "count": 20})
+    except Exception as exc:
+        _safe_log("Dummy payment seeding failed (non-blocking)", {"error": str(exc)})
 
 
 def create_chapter(body: Dict[str, Any]) -> Dict[str, Any]:
@@ -196,6 +238,9 @@ def create_chapter(body: Dict[str, Any]) -> Dict[str, Any]:
 
         # 5. Auto-generate 6 core pages
         _create_core_pages(chapter_id, now)
+
+        # 6. Seed dummy payment data for the new chapter
+        _seed_dummy_payments(chapter_id, slug)
 
         _safe_log("Chapter provisioned successfully", {"chapterId": chapter_id, "url": url})
 
