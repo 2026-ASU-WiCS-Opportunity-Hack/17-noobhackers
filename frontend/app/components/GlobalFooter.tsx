@@ -1,10 +1,24 @@
+"use client";
+
 /**
  * Global footer — red accent, matches wial.org structure.
+ * Hides on chapter pages where the chapter layout provides its own footer.
  */
 
 import Link from "next/link";
+import { usePathname } from "next/navigation";
+
+const NON_CHAPTER_ROUTES = new Set([
+  "about", "certification", "coaches", "resources", "events", "contact",
+  "login", "profile", "admin", "chapter-admin", "become-affiliate", "renew",
+]);
 
 export default function GlobalFooter() {
+  const pathname = usePathname();
+  const segments = pathname.split("/").filter(Boolean);
+  const isChapter = segments.length > 0 && !NON_CHAPTER_ROUTES.has(segments[0]);
+
+  if (isChapter) return null;
   return (
     <footer className="w-full bg-wial-gray-900 text-wial-gray-400">
       {/* Red accent bar */}

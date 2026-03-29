@@ -215,6 +215,7 @@ USER_SCHEMA: dict = {
     "properties": {
         "email": {"type": "string", "format": "email", "maxLength": 254},
         "role": {"type": "string", "enum": VALID_ROLES},
+        "password": {"type": "string", "minLength": 8, "maxLength": 128},
         "assignedChapters": {"type": "array", "items": {"type": "string", "maxLength": 100}},
     },
     "additionalProperties": False,
