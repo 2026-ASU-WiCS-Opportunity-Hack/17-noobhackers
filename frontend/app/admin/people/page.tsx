@@ -5,7 +5,7 @@
  * Filter by country, role, status.
  */
 
-import { useState, useMemo } from "react";
+import { useState } from "react";
 import { RouteGuard } from "../../context/AuthContext";
 
 interface Person {
@@ -33,6 +33,25 @@ const MOCK_PEOPLE: Person[] = [
   { id: "10", name: "Priya Sharma", email: "priya@example.com", role: "Coach", country: "India", region: "Asia Pacific", status: "active", certification: "CALC" },
 ];
 
+const COUNTRIES = [
+  "Afghanistan","Albania","Algeria","Argentina","Armenia","Australia","Austria","Azerbaijan",
+  "Bahrain","Bangladesh","Belgium","Benin","Bolivia","Bosnia and Herzegovina","Botswana","Brazil",
+  "Brunei","Bulgaria","Burkina Faso","Cambodia","Cameroon","Canada","Chile","China","Colombia",
+  "Congo","Costa Rica","Croatia","Cuba","Cyprus","Czech Republic","Denmark","Dominican Republic",
+  "Ecuador","Egypt","El Salvador","Estonia","Ethiopia","Fiji","Finland","France",
+  "Gabon","Georgia","Germany","Ghana","Greece","Guatemala","Guinea","Haiti","Honduras","Hungary",
+  "Iceland","India","Indonesia","Iran","Iraq","Ireland","Israel","Italy","Jamaica","Japan",
+  "Jordan","Kazakhstan","Kenya","Kuwait","Laos","Latvia","Lebanon","Libya","Lithuania","Luxembourg",
+  "Madagascar","Malawi","Malaysia","Mali","Malta","Mexico","Moldova","Mongolia","Morocco","Mozambique",
+  "Myanmar","Namibia","Nepal","Netherlands","New Zealand","Nicaragua","Niger","Nigeria","North Korea",
+  "Norway","Oman","Pakistan","Palestine","Panama","Paraguay","Peru","Philippines","Poland","Portugal",
+  "Qatar","Romania","Russia","Rwanda","Saudi Arabia","Senegal","Serbia","Sierra Leone","Singapore",
+  "Slovakia","Slovenia","Somalia","South Africa","South Korea","Spain","Sri Lanka","Sudan","Sweden",
+  "Switzerland","Syria","Taiwan","Tanzania","Thailand","Togo","Trinidad and Tobago","Tunisia","Turkey",
+  "Uganda","Ukraine","United Arab Emirates","United Kingdom","United States","Uruguay","Uzbekistan",
+  "Venezuela","Vietnam","Yemen","Zambia","Zimbabwe",
+];
+
 const STATUS_STYLES: Record<string, string> = {
   active: "bg-wial-success/10 text-wial-success",
   pending: "bg-wial-warning/10 text-wial-warning",
@@ -43,8 +62,15 @@ function PeopleContent() {
   const [roleFilter, setRoleFilter] = useState<"all" | "Chapter_Lead" | "Coach">("all");
   const [countryFilter, setCountryFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | "active" | "pending">("all");
+  const [countrySearch, setCountrySearch] = useState("");
+  const [countryDropdownOpen, setCountryDropdownOpen] = useState(false);
 
-  const countries = useMemo(() => Array.from(new Set(MOCK_PEOPLE.map((p) => p.country))).sort(), []);
+  // Merge mock countries with the full list
+  const mockCountries = Array.from(new Set(MOCK_PEOPLE.map((p) => p.country)));
+  const allCountries = Array.from(new Set([...mockCountries, ...COUNTRIES])).sort();
+  const filteredCountries = countrySearch
+    ? allCountries.filter(c => c.toLowerCase().includes(countrySearch.toLowerCase()))
+    : allCountries;
 
   let filtered = MOCK_PEOPLE;
   if (roleFilter !== "all") filtered = filtered.filter((p) => p.role === roleFilter);
@@ -80,30 +106,71 @@ function PeopleContent() {
       )}
 
       {/* Filters */}
-      <div className="mt-6 space-y-2">
+      <div className="mt-6 space-y-3 rounded-xl border border-wial-gray-200 bg-wial-gray-50/50 p-4">
         <div className="flex flex-wrap items-center gap-2">
-          <span className="text-sm font-medium text-wial-gray-500">Role:</span>
+          <span className="text-sm font-medium text-wial-gray-500 w-16">Role:</span>
           {(["all", "Chapter_Lead", "Coach"] as const).map((r) => (
             <button key={r} onClick={() => setRoleFilter(r)}
-              className={`rounded-full px-3 py-1.5 text-xs font-semibold ${roleFilter === r ? "bg-wial-red text-white" : "bg-wial-gray-100 text-wial-gray-600 hover:bg-wial-gray-200"}`}>
+              className={`rounded-xl px-4 py-2 text-xs font-semibold transition-all ${roleFilter === r ? "bg-wial-red text-white shadow-sm" : "bg-white text-wial-gray-600 border border-wial-gray-200 hover:border-wial-gray-300 hover:shadow-sm"}`}>
               {r === "all" ? "All" : r === "Chapter_Lead" ? "Chapter Leads" : "Coaches"}
             </button>
           ))}
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <span className="text-sm font-medium text-wial-gray-500">Country:</span>
-          <button onClick={() => setCountryFilter("")}
-            className={`rounded-full px-3 py-1.5 text-xs font-semibold ${!countryFilter ? "bg-wial-red text-white" : "bg-wial-gray-100 text-wial-gray-600 hover:bg-wial-gray-200"}`}>All</button>
-          {countries.map((c) => (
-            <button key={c} onClick={() => setCountryFilter(c)}
-              className={`rounded-full px-3 py-1.5 text-xs font-semibold ${countryFilter === c ? "bg-wial-red text-white" : "bg-wial-gray-100 text-wial-gray-600 hover:bg-wial-gray-200"}`}>{c}</button>
-          ))}
+          <span className="text-sm font-medium text-wial-gray-500 w-16">Country:</span>
+          <div className="relative">
+            <button onClick={() => setCountryDropdownOpen(!countryDropdownOpen)}
+              className={`flex items-center gap-2 rounded-xl border px-4 py-2 text-sm font-medium transition-all ${
+                countryFilter
+                  ? "border-wial-red bg-wial-red/5 text-wial-red"
+                  : "border-wial-gray-200 text-wial-gray-700 hover:border-wial-gray-300"
+              }`}>
+              <span>{countryFilter || "All Countries"}</span>
+              <svg className="h-4 w-4 text-wial-gray-400" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" />
+              </svg>
+            </button>
+            {countryDropdownOpen && (
+              <div className="absolute left-0 top-full z-50 mt-1 w-64 rounded-xl border border-wial-gray-200 bg-white shadow-xl">
+                <div className="p-2">
+                  <input
+                    type="text"
+                    value={countrySearch}
+                    onChange={(e) => setCountrySearch(e.target.value)}
+                    placeholder="Search countries..."
+                    autoFocus
+                    className="w-full rounded-lg border border-wial-gray-200 px-3 py-2 text-sm focus:border-wial-red focus:outline-none"
+                  />
+                </div>
+                <div className="max-h-60 overflow-y-auto px-1 pb-2">
+                  <button onClick={() => { setCountryFilter(""); setCountryDropdownOpen(false); setCountrySearch(""); }}
+                    className={`w-full rounded-lg px-3 py-2 text-left text-sm font-medium transition-colors ${!countryFilter ? "bg-wial-red/10 text-wial-red" : "text-wial-gray-700 hover:bg-wial-gray-50"}`}>
+                    All Countries
+                  </button>
+                  {filteredCountries.map((c) => (
+                    <button key={c} onClick={() => { setCountryFilter(c); setCountryDropdownOpen(false); setCountrySearch(""); }}
+                      className={`w-full rounded-lg px-3 py-2 text-left text-sm transition-colors ${countryFilter === c ? "bg-wial-red/10 font-semibold text-wial-red" : "text-wial-gray-700 hover:bg-wial-gray-50"}`}>
+                      {c}
+                    </button>
+                  ))}
+                  {filteredCountries.length === 0 && (
+                    <p className="px-3 py-2 text-sm text-wial-gray-400">No countries match</p>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+          {countryFilter && (
+            <button onClick={() => setCountryFilter("")} className="rounded-full bg-wial-gray-100 px-2 py-1 text-xs text-wial-gray-500 hover:bg-wial-gray-200">
+              ✕ Clear
+            </button>
+          )}
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <span className="text-sm font-medium text-wial-gray-500">Status:</span>
+          <span className="text-sm font-medium text-wial-gray-500 w-16">Status:</span>
           {(["all", "active", "pending"] as const).map((s) => (
             <button key={s} onClick={() => setStatusFilter(s)}
-              className={`rounded-full px-3 py-1.5 text-xs font-semibold capitalize ${statusFilter === s ? "bg-wial-red text-white" : "bg-wial-gray-100 text-wial-gray-600 hover:bg-wial-gray-200"}`}>{s}</button>
+              className={`rounded-xl px-4 py-2 text-xs font-semibold capitalize transition-all ${statusFilter === s ? "bg-wial-red text-white shadow-sm" : "bg-white text-wial-gray-600 border border-wial-gray-200 hover:border-wial-gray-300 hover:shadow-sm"}`}>{s}</button>
           ))}
         </div>
       </div>
