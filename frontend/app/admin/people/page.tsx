@@ -5,8 +5,10 @@
  * Filter by country, role, status.
  */
 
-import { useState } from "react";
-import { RouteGuard } from "../../context/AuthContext";
+import { useState, useEffect } from "react";
+import { RouteGuard, useAuth } from "../../context/AuthContext";
+
+const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "/api/";
 
 interface Person {
   id: string;
@@ -59,30 +61,67 @@ const STATUS_STYLES: Record<string, string> = {
 };
 
 function PeopleContent() {
+  const { user } = useAuth();
   const [roleFilter, setRoleFilter] = useState<"all" | "Chapter_Lead" | "Coach">("all");
   const [countryFilter, setCountryFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState<"all" | "active" | "pending">("all");
   const [countrySearch, setCountrySearch] = useState("");
   const [countryDropdownOpen, setCountryDropdownOpen] = useState(false);
+  const [people, setPeople] = useState<Person[]>(MOCK_PEOPLE);
+  const [loading, setLoading] = useState(true);
 
-  // Merge mock countries with the full list
-  const mockCountries = Array.from(new Set(MOCK_PEOPLE.map((p) => p.country)));
+  // Fetch real users from API and merge with mock data
+  useEffect(() => {
+    async function loadRealUsers() {
+      try {
+        const res = await fetch(`${API_URL}users`, {
+          headers: { Authorization: `Bearer ${user?.idToken}` },
+        });
+        if (res.ok) {
+          const data = await res.json();
+          const realUsers: Person[] = (data.users ?? [])
+            .filter((u: { role: string }) => u.role === "Chapter_Lead" || u.role === "Coach")
+            .map((u: { cognitoUserId: string; email: string; role: string; assignedChapters: string[]; status: string }, idx: number) => ({
+              id: `real-${u.cognitoUserId}`,
+              name: u.email.split("@")[0].replace(/[._-]/g, " ").replace(/\b\w/g, (c: string) => c.toUpperCase()),
+              email: u.email,
+              role: u.role as "Chapter_Lead" | "Coach",
+              country: (u.assignedChapters?.[0] ?? "").replace(/-/g, " ").replace(/\b\w/g, (c: string) => c.toUpperCase()) || "Unknown",
+              region: "",
+              status: (u.status ?? "active") as "active" | "pending" | "inactive",
+              chapter: u.role === "Chapter_Lead" ? `WIAL ${(u.assignedChapters?.[0] ?? "").replace(/-/g, " ").replace(/\b\w/g, (c: string) => c.toUpperCase())}` : undefined,
+            }));
+
+          // Merge: real users first, then mock users that don't overlap by email
+          const realEmails = new Set(realUsers.map(u => u.email.toLowerCase()));
+          const dedupedMock = MOCK_PEOPLE.filter(p => !realEmails.has(p.email.toLowerCase()));
+          setPeople([...realUsers, ...dedupedMock]);
+        }
+      } catch {}
+      finally { setLoading(false); }
+    }
+    loadRealUsers();
+  }, [user?.idToken]);
+
+  const mockCountries = Array.from(new Set(people.map((p) => p.country)));
   const allCountries = Array.from(new Set([...mockCountries, ...COUNTRIES])).sort();
   const filteredCountries = countrySearch
     ? allCountries.filter(c => c.toLowerCase().includes(countrySearch.toLowerCase()))
     : allCountries;
 
-  let filtered = MOCK_PEOPLE;
+  let filtered = people;
   if (roleFilter !== "all") filtered = filtered.filter((p) => p.role === roleFilter);
   if (countryFilter) filtered = filtered.filter((p) => p.country === countryFilter);
   if (statusFilter !== "all") filtered = filtered.filter((p) => p.status === statusFilter);
 
-  const pendingCLs = MOCK_PEOPLE.filter((p) => p.role === "Chapter_Lead" && p.status === "pending");
+  const pendingCLs = people.filter((p) => p.role === "Chapter_Lead" && p.status === "pending");
 
   return (
     <div className="mx-auto max-w-7xl px-4 py-10 sm:px-6">
       <h1 className="text-3xl font-bold text-wial-gray-900">People Management</h1>
       <p className="mt-1 text-wial-gray-500">Manage all chapter leads and coaches worldwide</p>
+
+      {loading && <div className="mt-6 flex justify-center"><div className="h-8 w-8 animate-spin rounded-full border-4 border-wial-gray-200 border-t-wial-red" /></div>}
 
       {/* Pending CL approvals */}
       {pendingCLs.length > 0 && (
@@ -202,7 +241,7 @@ function PeopleContent() {
           </tbody>
         </table>
       </div>
-      <p className="mt-4 text-sm text-wial-gray-400">Showing {filtered.length} of {MOCK_PEOPLE.length}</p>
+      <p className="mt-4 text-sm text-wial-gray-400">Showing {filtered.length} of {people.length}</p>
     </div>
   );
 }
