@@ -1,0 +1,44 @@
+# Kiro
+.kiro/
+
+# Deployment guide (contains account-specific commands)
+DEPLOYMENT.md
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Node
+node_modules/
+.next/
+
+# Environment files (contain API keys, Cognito IDs, Stripe keys)
+.env
+.env.*
+.env.local
+.env*.local
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# CDK
+cdk.out/
+.cdk.staging/
+cdk.context.json
+
+# IDE
+.vscode/
+.idea/
+
+# Vercel (contains project/org IDs)
+.vercel/
+
+# AWS
+.aws/
+
+# Secrets / credentials
+*.pem
+*.key
+*.cert

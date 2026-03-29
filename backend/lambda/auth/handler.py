@@ -198,16 +198,54 @@ def post_authentication(event: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _extract_claims(event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Extract JWT claims from the API Gateway request context.
+    """Extract JWT claims from the request.
 
-    Returns None if no valid authorizer claims are present.
+    Tries two sources in order:
+    1. API Gateway Cognito authorizer claims (``requestContext.authorizer.claims``)
+    2. Direct JWT decode from the ``Authorization`` header — used when the
+       API Gateway route has no Cognito authorizer (e.g. ``/users`` routes,
+       which skip the authorizer to avoid a circular CDK dependency).
+
+    Returns None if no valid claims are found.
     """
+    # 1. Cognito authorizer claims (populated by API Gateway)
     claims = (
         event.get("requestContext", {})
         .get("authorizer", {})
         .get("claims")
     )
-    return claims
+    if claims:
+        return claims
+
+    # 2. Decode JWT from Authorization header directly
+    headers = event.get("headers") or {}
+    auth_header = headers.get("Authorization") or headers.get("authorization") or ""
+    token = auth_header.replace("Bearer ", "").strip() if auth_header else ""
+    if not token:
+        return None
+
+    try:
+        import base64
+        # JWT is three base64url-encoded segments separated by dots
+        parts = token.split(".")
+        if len(parts) != 3:
+            return None
+        # Decode the payload (second segment)
+        payload = parts[1]
+        # Add padding if needed
+        padding = 4 - len(payload) % 4
+        if padding != 4:
+            payload += "=" * padding
+        decoded = base64.urlsafe_b64decode(payload)
+        claims = json.loads(decoded)
+        # Basic expiry check
+        import time
+        exp = claims.get("exp", 0)
+        if exp and time.time() > exp:
+            return None
+        return claims
+    except Exception:
+        return None
 
 
 def authorize(
@@ -374,7 +412,7 @@ def list_users(event: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def create_user(event: Dict[str, Any]) -> Dict[str, Any]:
-    """POST /users — create user with role (Super_Admin, Chapter_Lead)."""
+    """POST /users — create user with role. Creates real Cognito user."""
     auth_context = authorize(event, "Chapter_Lead")
 
     body = json.loads(event.get("body") or "{}")
@@ -382,21 +420,92 @@ def create_user(event: Dict[str, Any]) -> Dict[str, Any]:
 
     target_role = sanitized["role"]
 
-    # Chapter_Lead can only create Content_Creator and Coach roles
     if auth_context["role"] == "Chapter_Lead" and target_role in ("Super_Admin", "Chapter_Lead"):
         raise AuthorizationError("Insufficient permissions")
 
+    email = sanitized["email"]
     now = _now_iso()
-    # Use email as a temporary cognito user id placeholder until Cognito sync
-    cognito_user_id = sanitized["email"]
 
+    # Create real Cognito user and extract the sub (unique user ID)
+    cognito_client = boto3.client("cognito-idp")
+    user_pool_id = os.environ.get("USER_POOL_ID", "")
+    cognito_user_id = email  # fallback if Cognito call fails or no pool configured
+
+    if user_pool_id:
+        try:
+            # Create user in Cognito
+            create_response = cognito_client.admin_create_user(
+                UserPoolId=user_pool_id,
+                Username=email,
+                UserAttributes=[
+                    {"Name": "email", "Value": email},
+                    {"Name": "email_verified", "Value": "true"},
+                    {"Name": "given_name", "Value": sanitized.get("givenName", "User")},
+                    {"Name": "family_name", "Value": sanitized.get("familyName", "")},
+                ],
+                TemporaryPassword="TempPass123!",
+                MessageAction="SUPPRESS",
+            )
+
+            # Extract the real Cognito sub from the response so the Users
+            # table PK matches what the post-authentication trigger uses.
+            user_attrs = create_response.get("User", {}).get("Attributes", [])
+            for attr in user_attrs:
+                if attr.get("Name") == "sub":
+                    cognito_user_id = attr["Value"]
+                    break
+
+            # Set permanent password if provided
+            password = body.get("password", "")
+            if password:
+                cognito_client.admin_set_user_password(
+                    UserPoolId=user_pool_id,
+                    Username=email,
+                    Password=password,
+                    Permanent=True,
+                )
+
+            # Add to role group
+            role_to_group = {
+                "Super_Admin": "SuperAdmins",
+                "Chapter_Lead": "ChapterLeads",
+                "Content_Creator": "ContentCreators",
+                "Coach": "Coaches",
+            }
+            group = role_to_group.get(target_role)
+            if group:
+                cognito_client.admin_add_user_to_group(
+                    UserPoolId=user_pool_id,
+                    Username=email,
+                    GroupName=group,
+                )
+
+            _safe_log("Cognito user created", {"role": target_role})
+        except cognito_client.exceptions.UsernameExistsException:
+            # User already exists — look up their sub so we still store the right PK
+            _safe_log("Cognito user already exists, fetching sub", {"email": "[REDACTED]"})
+            try:
+                existing_user = cognito_client.admin_get_user(
+                    UserPoolId=user_pool_id,
+                    Username=email,
+                )
+                for attr in existing_user.get("UserAttributes", []):
+                    if attr.get("Name") == "sub":
+                        cognito_user_id = attr["Value"]
+                        break
+            except Exception:
+                _safe_log("Failed to fetch existing Cognito user sub")
+        except Exception as exc:
+            _safe_log("Cognito user creation failed", {"error": str(exc)})
+    # Write to Users table using the real Cognito sub as PK
     user_item = {
         "PK": f"USER#{cognito_user_id}",
         "SK": "PROFILE",
         "cognitoUserId": cognito_user_id,
-        "email": sanitized["email"],
+        "email": email,
         "role": target_role,
         "assignedChapters": sanitized.get("assignedChapters", []),
+        "country": body.get("country", ""),
         "status": "active",
         "createdAt": now,
         "updatedAt": now,
@@ -404,15 +513,15 @@ def create_user(event: Dict[str, Any]) -> Dict[str, Any]:
 
     try:
         users_table.put_item(Item=user_item)
-        _safe_log("User created", {"email": sanitized["email"], "role": target_role})
     except Exception as exc:
         _safe_log("Create user failed", {"error": str(exc)})
         raise
 
     return {
         "cognitoUserId": cognito_user_id,
-        "email": sanitized["email"],
+        "email": email,
         "role": target_role,
+        "country": body.get("country", ""),
         "status": "active",
     }
 

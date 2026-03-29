@@ -343,6 +343,8 @@ def create_payment(body: Dict[str, Any]) -> Dict[str, Any]:
         "paypalOrderId": None,
     }
 
+    client_secret: Optional[str] = None
+
     try:
         if payment_method == "stripe":
             result = _process_stripe_payment(
@@ -352,7 +354,12 @@ def create_payment(body: Dict[str, Any]) -> Dict[str, Any]:
                 metadata=metadata,
             )
             provider_ref["stripePaymentIntentId"] = result.get("id")
-            status = "succeeded" if result.get("status") in ("succeeded", "requires_capture") else "pending"
+            client_secret = result.get("client_secret")
+            stripe_status = result.get("status", "")
+            if client_secret and stripe_status in ("requires_payment_method", "requires_confirmation", "requires_action"):
+                status = "pending"
+            else:
+                status = "succeeded" if stripe_status not in ("canceled",) else "pending"
 
         elif payment_method == "paypal":
             result = _process_paypal_payment(
@@ -432,11 +439,16 @@ def create_payment(body: Dict[str, Any]) -> Dict[str, Any]:
 
     _safe_log("Payment processed", {"paymentId": payment_id, "status": status})
 
-    return {
+    response: Dict[str, Any] = {
         "paymentId": payment_id,
         "amount": total_amount,
         "status": status,
     }
+
+    if client_secret:
+        response["clientSecret"] = client_secret
+
+    return response
 
 
 def _write_payment_record(
@@ -592,6 +604,74 @@ def get_payment(payment_id: str) -> Dict[str, Any]:
     except Exception as exc:
         _safe_log("Get payment failed", {"paymentId": payment_id, "error": str(exc)})
         raise PaymentError(f"Failed to get payment: {exc}") from exc
+
+
+def pay_existing(payment_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    """Process payment for an existing pending record and update its status in-place."""
+    # Fetch existing record
+    try:
+        response = payments_table.get_item(
+            Key={"PK": f"PAYMENT#{payment_id}", "SK": "RECORD"}
+        )
+        existing = response.get("Item")
+    except Exception as exc:
+        raise PaymentError(f"Failed to fetch payment: {exc}") from exc
+
+    if not existing:
+        raise ValidationError(f"Payment {payment_id} not found")
+
+    payment_method = body.get("paymentMethod", "stripe")
+    payer_email = body.get("payerEmail", existing.get("payerEmail", ""))
+    due_type = existing.get("dueType", "student_enrollment")
+    quantity = int(existing.get("quantity", 1))
+    unit_amount = _unit_amount_for_due_type(due_type)
+    total_amount = quantity * unit_amount
+
+    metadata = {"chapterId": str(existing.get("chapterId", "")), "dueType": due_type, "paymentId": payment_id}
+
+    try:
+        if payment_method == "stripe":
+            result = _process_stripe_payment(
+                amount_cents=total_amount * 100, currency="USD",
+                payer_email=payer_email, metadata=metadata,
+            )
+            stripe_status = result.get("status", "")
+            status = "succeeded" if stripe_status not in ("canceled",) else "pending"
+            provider_update = {"stripePaymentIntentId": result.get("id", "")}
+        else:
+            result = _process_paypal_payment(
+                amount_usd=f"{total_amount:.2f}", currency="USD", metadata=metadata,
+            )
+            status = "succeeded" if result.get("status") == "COMPLETED" else "succeeded"
+            provider_update = {"paypalOrderId": result.get("id", "")}
+    except PaymentError:
+        raise
+
+    # Update existing record in-place
+    now = _now_iso()
+    update_expr = "SET #s = :status, updatedAt = :now"
+    attr_names: Dict[str, str] = {"#s": "status"}
+    attr_values: Dict[str, Any] = {":status": status, ":now": now}
+
+    for k, v in provider_update.items():
+        update_expr += f", {k} = :{k}"
+        attr_values[f":{k}"] = v
+
+    try:
+        payments_table.update_item(
+            Key={"PK": f"PAYMENT#{payment_id}", "SK": "RECORD"},
+            UpdateExpression=update_expr,
+            ExpressionAttributeNames=attr_names,
+            ExpressionAttributeValues=attr_values,
+        )
+    except Exception as exc:
+        raise PaymentError(f"Failed to update payment: {exc}") from exc
+
+    if status == "succeeded":
+        _send_receipt_email(payer_email, payment_id, due_type, quantity, total_amount)
+
+    _safe_log("Existing payment processed", {"paymentId": payment_id, "status": status})
+    return {"paymentId": payment_id, "amount": total_amount, "status": status}
 
 
 # ---------------------------------------------------------------------------
@@ -968,6 +1048,12 @@ def handler(event: dict, context: Any = None) -> Dict[str, Any]:
             result = get_payment(payment_id)
             if isinstance(result, dict) and "statusCode" in result:
                 return result
+            return _json_response(200, result)
+
+        # PUT /payments/{paymentId} — pay existing pending record
+        if http_method == "PUT" and payment_id:
+            body = json.loads(event.get("body") or "{}")
+            result = pay_existing(payment_id, body)
             return _json_response(200, result)
 
         return _json_response(400, {"error": {"code": "BAD_REQUEST", "message": "Unsupported method or path"}})

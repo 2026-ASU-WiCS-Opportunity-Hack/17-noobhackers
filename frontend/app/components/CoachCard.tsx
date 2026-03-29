@@ -14,6 +14,7 @@ export interface CoachProfile {
   photoUrl?: string;
   certificationLevel: CertificationLevel;
   location: string;
+  country: string;
   contactInfo: string;
   bio: string;
 }
@@ -51,6 +52,7 @@ export default function CoachCard({ coach }: CoachCardProps) {
             <CertBadge level={coach.certificationLevel} />
           </div>
           <p className="text-sm text-wial-gray-500">{coach.location}</p>
+          <p className="text-xs text-wial-gray-400">{coach.country}</p>
           <p className="text-sm text-wial-gray-500">{coach.contactInfo}</p>
         </div>
       </div>

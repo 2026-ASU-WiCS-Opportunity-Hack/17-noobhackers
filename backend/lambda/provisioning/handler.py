@@ -15,6 +15,7 @@ import logging
 import os
 import uuid
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
 import boto3
@@ -73,10 +74,14 @@ CORS_HEADERS = {
 
 def _json_response(status_code: int, body: Any) -> Dict[str, Any]:
     """Build an API Gateway proxy-compatible response."""
+    def _default(obj: Any) -> Any:
+        if isinstance(obj, Decimal):
+            return int(obj) if obj == int(obj) else float(obj)
+        raise TypeError(f"Not serializable: {type(obj).__name__}")
     return {
         "statusCode": status_code,
         "headers": CORS_HEADERS,
-        "body": json.dumps(body),
+        "body": json.dumps(body, default=_default),
     }
 
 
@@ -127,6 +132,38 @@ def create_chapter(body: Dict[str, Any]) -> Dict[str, Any]:
 
     chapter_id = str(uuid.uuid4())
     slug = sanitized["slug"]
+    now = _now_iso()
+    url = _generate_url(slug)
+
+    # 1. Validate
+    try:
+        sanitized = validate_input(body, CHAPTER_SCHEMA)
+    except ValidationError:
+        raise
+
+    slug = sanitized["slug"]
+
+    # 1b. Check for duplicate slug via GSI1
+    try:
+        existing = chapters_table.query(
+            IndexName="GSI1",
+            KeyConditionExpression="slug = :slug",
+            ExpressionAttributeValues={":slug": slug},
+            Limit=1,
+        )
+        if existing.get("Items"):
+            existing_chapter = existing["Items"][0]
+            if existing_chapter.get("status") == "active":
+                raise ValidationError(
+                    f"A chapter with slug '{slug}' already exists. Choose a different slug."
+                )
+    except ValidationError:
+        raise
+    except Exception as exc:
+        _safe_log("Slug uniqueness check failed", {"slug": slug, "error": str(exc)})
+        # Allow creation to proceed if GSI query fails (non-blocking)
+
+    chapter_id = str(uuid.uuid4())
     now = _now_iso()
     url = _generate_url(slug)
 

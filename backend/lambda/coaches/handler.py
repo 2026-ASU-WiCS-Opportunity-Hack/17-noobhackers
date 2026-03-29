@@ -15,6 +15,7 @@ import logging
 import os
 import uuid
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
 import boto3
@@ -71,11 +72,18 @@ CORS_HEADERS = {
 }
 
 
+def _decimal_default(obj: Any) -> Any:
+    """JSON serializer for Decimal values returned by DynamoDB."""
+    if isinstance(obj, Decimal):
+        return int(obj) if obj == int(obj) else float(obj)
+    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
+
+
 def _json_response(status_code: int, body: Any) -> Dict[str, Any]:
     return {
         "statusCode": status_code,
         "headers": CORS_HEADERS,
-        "body": json.dumps(body),
+        "body": json.dumps(body, default=_decimal_default),
     }
 
 
@@ -189,6 +197,7 @@ def _coach_response(item: Dict[str, Any]) -> Dict[str, Any]:
         "photoUrl": item.get("photoUrl", ""),
         "certificationLevel": item.get("certificationLevel"),
         "location": item.get("location"),
+        "country": item.get("country", ""),
         "contactInfo": item.get("contactInfo"),
         "bio": item.get("bio"),
         "languages": item.get("languages", []),
@@ -322,7 +331,7 @@ def create_coach(event: Dict[str, Any], body: Dict[str, Any]) -> Dict[str, Any]:
         "PK": f"COACH#{coach_id}",
         "SK": "PROFILE",
         "coachId": coach_id,
-        "cognitoUserId": "",
+        "cognitoUserId": "unlinked",
         "chapterId": target_chapter,
         "name": sanitized["name"],
         "photoUrl": sanitized.get("photoUrl", ""),
