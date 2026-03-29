@@ -18,12 +18,18 @@ export default function LoginPage() {
 
   useEffect(() => {
     if (isAuthenticated && user && typeof window !== "undefined") {
-      // Redirect to role-appropriate dashboard
+      // Chapter Leads and Coaches redirect to their chapter
+      if ((user.role === "Chapter_Lead" || user.role === "Coach") && user.assignedChapters.length > 0) {
+        const slug = user.assignedChapters[0];
+        const dest = user.role === "Chapter_Lead" ? `/${slug}/dashboard` : `/${slug}/coaches`;
+        window.location.href = dest;
+        return;
+      }
       const redirectMap: Record<string, string> = {
         Super_Admin: "/admin/dashboard",
         Chapter_Lead: "/chapter-admin/dashboard",
         Content_Creator: "/chapter-admin/content",
-        Coach: "/my-learning",
+        Coach: "/coaches",
       };
       window.location.href = redirectMap[user.role] ?? "/";
     }

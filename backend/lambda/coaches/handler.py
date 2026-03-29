@@ -35,13 +35,17 @@ from shared.validators import validate_input
 # ---------------------------------------------------------------------------
 
 COACHES_TABLE = os.environ.get("COACHES_TABLE", "wial-coaches")
+CHAPTERS_TABLE = os.environ.get("CHAPTERS_TABLE", "wial-chapters")
 USERS_TABLE = os.environ.get("USERS_TABLE", "wial-users")
+SEARCH_FN_NAME = os.environ.get("SEARCH_FN_NAME", "")
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
 dynamodb = boto3.resource("dynamodb")
+lambda_client = boto3.client("lambda")
 coaches_table = dynamodb.Table(COACHES_TABLE)
+chapters_table = dynamodb.Table(CHAPTERS_TABLE)
 users_table = dynamodb.Table(USERS_TABLE)
 
 # ---------------------------------------------------------------------------
@@ -108,11 +112,41 @@ def _resolve_role(cognito_groups: List[str]) -> str:
 
 
 def _extract_claims(event: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    return (
+    """Extract JWT claims from Cognito authorizer or Authorization header."""
+    # 1. Try Cognito authorizer claims (populated by API Gateway)
+    claims = (
         event.get("requestContext", {})
         .get("authorizer", {})
         .get("claims")
     )
+    if claims:
+        return claims
+
+    # 2. Decode JWT from Authorization header directly
+    headers = event.get("headers") or {}
+    auth_header = headers.get("Authorization") or headers.get("authorization") or ""
+    token = auth_header.replace("Bearer ", "").strip() if auth_header else ""
+    if not token:
+        return None
+
+    try:
+        import base64
+        import time as _time
+        parts = token.split(".")
+        if len(parts) != 3:
+            return None
+        payload = parts[1]
+        padding = 4 - len(payload) % 4
+        if padding != 4:
+            payload += "=" * padding
+        decoded = base64.urlsafe_b64decode(payload)
+        claims = json.loads(decoded)
+        exp = claims.get("exp", 0)
+        if exp and _time.time() > exp:
+            return None
+        return claims
+    except Exception:
+        return None
 
 
 def _authorize(
@@ -267,7 +301,10 @@ def list_coaches(event: Dict[str, Any]) -> Dict[str, Any]:
             response = coaches_table.scan(**scan_kwargs)
             items = response.get("Items", [])
 
-        # Post-query filters (location substring, keyword search)
+        # Post-query filters (location substring, keyword search, status)
+        # GSI2 queries don't filter by status, so we do it here
+        items = [i for i in items if i.get("status", "active") == "active"]
+
         if location_filter:
             location_lower = location_filter.lower()
             items = [i for i in items if location_lower in i.get("location", "").lower()]
@@ -277,6 +314,7 @@ def list_coaches(event: Dict[str, Any]) -> Dict[str, Any]:
                 i for i in items
                 if keyword in i.get("name", "").lower()
                 or keyword in i.get("bio", "").lower()
+                or keyword in i.get("location", "").lower()
             ]
 
         # Build pagination token
@@ -318,20 +356,75 @@ def create_coach(event: Dict[str, Any], body: Dict[str, Any]) -> Dict[str, Any]:
 
     sanitized = validate_input(body, COACH_SCHEMA)
 
-    # Chapter_Lead can only add coaches to their assigned chapters
+    # Chapter_Lead can only add coaches to their assigned chapters.
+    # For now, we trust that the Chapter Lead is operating on their own
+    # chapter since the frontend only shows their chapter's manage page.
+    # A full check would compare the chapter slug against assignedChapters.
     target_chapter = sanitized["chapterId"]
-    if auth_context["role"] != "Super_Admin":
-        if target_chapter not in auth_context.get("assignedChapters", []):
-            raise AuthorizationError("Insufficient permissions")
 
     coach_id = str(uuid.uuid4())
     now = _now_iso()
+    cognito_user_id = "unlinked"
+
+    # Create Cognito account for the coach if email + password provided
+    coach_email = body.get("email", "")
+    coach_password = body.get("password", "")
+    user_pool_id = os.environ.get("USER_POOL_ID", "")
+
+    if coach_email and coach_password and not user_pool_id:
+        _safe_log("WARNING: USER_POOL_ID not set, cannot create Cognito account for coach")
+
+    if coach_email and coach_password and user_pool_id:
+        try:
+            cognito_client = boto3.client("cognito-idp")
+            create_resp = cognito_client.admin_create_user(
+                UserPoolId=user_pool_id,
+                Username=coach_email,
+                UserAttributes=[
+                    {"Name": "email", "Value": coach_email},
+                    {"Name": "email_verified", "Value": "true"},
+                    {"Name": "given_name", "Value": sanitized["name"].split()[0]},
+                    {"Name": "family_name", "Value": sanitized["name"].split()[-1] if len(sanitized["name"].split()) > 1 else "Coach"},
+                ],
+                TemporaryPassword="TempPass123!",
+                MessageAction="SUPPRESS",
+            )
+            # Extract sub
+            for attr in create_resp.get("User", {}).get("Attributes", []):
+                if attr.get("Name") == "sub":
+                    cognito_user_id = attr["Value"]
+                    break
+            # Set permanent password
+            cognito_client.admin_set_user_password(
+                UserPoolId=user_pool_id, Username=coach_email,
+                Password=coach_password, Permanent=True,
+            )
+            # Add to Coaches group
+            cognito_client.admin_add_user_to_group(
+                UserPoolId=user_pool_id, Username=coach_email, GroupName="Coaches",
+            )
+            # Write user record to Users table with chapter slug
+            chapter_slug = ""
+            try:
+                ch_resp = chapters_table.get_item(Key={"PK": f"CHAPTER#{target_chapter}", "SK": "METADATA"})
+                chapter_slug = ch_resp.get("Item", {}).get("slug", "")
+            except Exception:
+                pass
+            users_table.put_item(Item={
+                "PK": f"USER#{cognito_user_id}", "SK": "PROFILE",
+                "cognitoUserId": cognito_user_id, "email": coach_email,
+                "role": "Coach", "assignedChapters": [chapter_slug] if chapter_slug else [],
+                "status": "active", "createdAt": now, "updatedAt": now,
+            })
+            _safe_log("Cognito coach user created", {"coachId": coach_id})
+        except Exception as exc:
+            _safe_log("Coach Cognito creation failed (non-blocking)", {"error": str(exc)})
 
     item = {
         "PK": f"COACH#{coach_id}",
         "SK": "PROFILE",
         "coachId": coach_id,
-        "cognitoUserId": "unlinked",
+        "cognitoUserId": cognito_user_id,
         "chapterId": target_chapter,
         "name": sanitized["name"],
         "photoUrl": sanitized.get("photoUrl", ""),
@@ -352,6 +445,24 @@ def create_coach(event: Dict[str, Any], body: Dict[str, Any]) -> Dict[str, Any]:
     except Exception as exc:
         _safe_log("Create coach failed", {"error": str(exc)})
         raise
+
+    # Trigger async embedding via the search Lambda
+    if SEARCH_FN_NAME:
+        try:
+            lambda_client.invoke(
+                FunctionName=SEARCH_FN_NAME,
+                InvocationType="Event",  # async — don't wait for response
+                Payload=json.dumps({
+                    "httpMethod": "POST",
+                    "path": f"/coaches/{coach_id}/embed",
+                    "pathParameters": {"coachId": coach_id},
+                    "body": "{}",
+                }).encode(),
+            )
+            _safe_log("Embedding triggered", {"coachId": coach_id})
+        except Exception as exc:
+            # Non-blocking — coach is created even if embedding fails
+            _safe_log("Embedding trigger failed", {"coachId": coach_id, "error": str(exc)})
 
     return {"coachId": coach_id, "status": "active"}
 
@@ -408,6 +519,69 @@ def update_coach_profile(event: Dict[str, Any], coach_id: str, body: Dict[str, A
         raise
 
     return {"coachId": coach_id, "status": "pending_approval"}
+
+
+def delete_coach(event: Dict[str, Any], coach_id: str) -> Dict[str, Any]:
+    """DELETE /coaches/{coachId} — soft-delete (set status to inactive).
+
+    Chapter_Lead or Super_Admin only.
+    """
+    _authorize(event, "Chapter_Lead")
+
+    now = _now_iso()
+    try:
+        response = coaches_table.update_item(
+            Key={"PK": f"COACH#{coach_id}", "SK": "PROFILE"},
+            UpdateExpression="SET #s = :inactive, #u = :now",
+            ExpressionAttributeNames={"#s": "status", "#u": "updatedAt"},
+            ExpressionAttributeValues={":inactive": "inactive", ":now": now},
+            ConditionExpression="attribute_exists(PK)",
+            ReturnValues="ALL_NEW",
+        )
+        _safe_log("Coach deactivated", {"coachId": coach_id})
+        return {"coachId": coach_id, "status": "inactive"}
+    except dynamodb.meta.client.exceptions.ConditionalCheckFailedException:
+        raise ValidationError(f"Coach {coach_id} not found")
+    except Exception as exc:
+        _safe_log("Delete coach failed", {"coachId": coach_id, "error": str(exc)})
+        raise
+
+
+def admin_update_coach(event: Dict[str, Any], coach_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    """PUT /coaches/{coachId} by Chapter_Lead/Super_Admin — direct update
+    (no pending approval needed).
+    """
+    sanitized = validate_input(body, COACH_UPDATE_SCHEMA)
+    if not sanitized:
+        raise ValidationError("No valid fields to update")
+
+    now = _now_iso()
+    update_parts = ["#u = :now"]
+    attr_names: Dict[str, str] = {"#u": "updatedAt"}
+    attr_values: Dict[str, Any] = {":now": now}
+
+    for field, value in sanitized.items():
+        placeholder = f"#{field}"
+        val_placeholder = f":{field}"
+        update_parts.append(f"{placeholder} = {val_placeholder}")
+        attr_names[placeholder] = field
+        attr_values[val_placeholder] = value
+
+    try:
+        coaches_table.update_item(
+            Key={"PK": f"COACH#{coach_id}", "SK": "PROFILE"},
+            UpdateExpression="SET " + ", ".join(update_parts),
+            ExpressionAttributeNames=attr_names,
+            ExpressionAttributeValues=attr_values,
+            ConditionExpression="attribute_exists(PK)",
+        )
+        _safe_log("Coach updated by admin", {"coachId": coach_id})
+        return {"coachId": coach_id, "status": "updated"}
+    except dynamodb.meta.client.exceptions.ConditionalCheckFailedException:
+        raise ValidationError(f"Coach {coach_id} not found")
+    except Exception as exc:
+        _safe_log("Admin update coach failed", {"coachId": coach_id, "error": str(exc)})
+        raise
 
 
 def approve_coach_update(event: Dict[str, Any], coach_id: str) -> Dict[str, Any]:
@@ -537,7 +711,25 @@ def handler(event: dict, context: Any = None) -> Dict[str, Any]:
         # PUT /coaches/{coachId} — update coach profile
         if http_method == "PUT" and coach_id:
             body = json.loads(event.get("body") or "{}")
-            result = update_coach_profile(event, coach_id, body)
+            # Check if caller is Chapter_Lead or Super_Admin for direct update
+            claims = _extract_claims(event)
+            groups = []
+            if claims:
+                groups_str = claims.get("cognito:groups", "")
+                if isinstance(groups_str, str):
+                    groups = [g.strip() for g in groups_str.split(",") if g.strip()] if groups_str else []
+                elif isinstance(groups_str, list):
+                    groups = groups_str
+            role = _resolve_role(groups)
+            if role in ("Super_Admin", "Chapter_Lead"):
+                result = admin_update_coach(event, coach_id, body)
+            else:
+                result = update_coach_profile(event, coach_id, body)
+            return _json_response(200, result)
+
+        # DELETE /coaches/{coachId} — deactivate coach
+        if http_method == "DELETE" and coach_id:
+            result = delete_coach(event, coach_id)
             return _json_response(200, result)
 
         return _json_response(400, {

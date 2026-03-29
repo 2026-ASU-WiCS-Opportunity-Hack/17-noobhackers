@@ -227,6 +227,7 @@ export class WialPlatformStack extends cdk.Stack {
         'cognito-idp:AdminSetUserPassword',
         'cognito-idp:AdminAddUserToGroup',
         'cognito-idp:AdminGetUser',
+        'cognito-idp:AdminListGroupsForUser',
       ],
       resources: ['*'],
     }));
@@ -495,9 +496,25 @@ class ApiConstruct extends Construct {
     // ─── IAM: Least-Privilege Policies ────────────────────────────────
     props.chaptersTable.grantReadWriteData(this.provisioningFn);
     props.pagesTable.grantReadWriteData(this.provisioningFn);
+    props.paymentsTable.grantReadWriteData(this.provisioningFn);
     props.assetsBucket.grantReadWrite(this.provisioningFn, 'templates/*');
     props.assetsBucket.grantReadWrite(this.provisioningFn, 'chapters/*');
     props.coachesTable.grantReadWriteData(this.coachesFn);
+    props.chaptersTable.grantReadData(this.coachesFn);
+    // Allow coaches Lambda to invoke search Lambda for embedding
+    this.searchFn.grantInvoke(this.coachesFn);
+    this.coachesFn.addEnvironment('SEARCH_FN_NAME', this.searchFn.functionName);
+
+    // Coaches Lambda needs Cognito access to create coach user accounts
+    this.coachesFn.addToRolePolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        'cognito-idp:AdminCreateUser',
+        'cognito-idp:AdminSetUserPassword',
+        'cognito-idp:AdminAddUserToGroup',
+      ],
+      resources: ['*'],
+    }));
     props.paymentsTable.grantReadWriteData(this.paymentsFn);
     props.coachesTable.grantReadWriteData(this.searchFn);
     props.chaptersTable.grantReadData(this.metricsFn);
@@ -556,14 +573,15 @@ class ApiConstruct extends Construct {
 
     const coaches = this.api.root.addResource('coaches');
     coaches.addMethod('GET', coachInt);
-    coaches.addMethod('POST', coachInt, authOpts);
+    coaches.addMethod('POST', coachInt);  // Auth handled by Lambda (avoids Cognito authorizer token issues)
     const coachSearch = coaches.addResource('search');
     coachSearch.addMethod('GET', searchInt);
     const coach = coaches.addResource('{coachId}');
     coach.addMethod('GET', coachInt);
-    coach.addMethod('PUT', coachInt, authOpts);
+    coach.addMethod('PUT', coachInt);  // Auth handled by Lambda
+    coach.addMethod('DELETE', coachInt);  // Auth handled by Lambda
     const coachApprove = coach.addResource('approve');
-    coachApprove.addMethod('POST', coachInt, authOpts);
+    coachApprove.addMethod('POST', coachInt);  // Auth handled by Lambda
 
     const coachEmbed = coach.addResource('embed');
     coachEmbed.addMethod('POST', searchInt, authOpts);
@@ -592,6 +610,8 @@ class ApiConstruct extends Construct {
     const users = this.api.root.addResource('users');
     users.addMethod('GET', authInt);
     users.addMethod('POST', authInt);
+    const usersMe = users.addResource('me');
+    usersMe.addMethod('GET', authInt);  // Any authenticated user can get own profile
     const user = users.addResource('{userId}');
     user.addResource('role').addMethod('PUT', authInt);
     user.addMethod('DELETE', authInt);

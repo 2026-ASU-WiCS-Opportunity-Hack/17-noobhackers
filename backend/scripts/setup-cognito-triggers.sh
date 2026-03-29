@@ -58,6 +58,30 @@ aws lambda update-function-configuration \
 echo "Waiting for Lambda update to complete..."
 aws lambda wait function-updated --function-name "$AUTH_FN_NAME" --region "$REGION"
 
+# 1b. Set USER_POOL_ID on the coaches Lambda too (for coach account creation)
+echo "Setting USER_POOL_ID on coaches Lambda..."
+COACHES_FN_NAME="wial-coaches"
+
+if [ -n "$COACHES_FN_NAME" ]; then
+  COACHES_ENV=$(aws lambda get-function-configuration \
+    --function-name "$COACHES_FN_NAME" --region "$REGION" \
+    --query "Environment.Variables" --output json 2>/dev/null || echo "{}")
+  COACHES_UPDATED=$(echo "$COACHES_ENV" | python3 -c "
+import sys, json
+env = json.load(sys.stdin)
+env['USER_POOL_ID'] = '$USER_POOL_ID'
+print(json.dumps({'Variables': env}))
+")
+  aws lambda update-function-configuration \
+    --function-name "$COACHES_FN_NAME" --region "$REGION" \
+    --environment "$COACHES_UPDATED" \
+    --no-cli-pager
+  aws lambda wait function-updated --function-name "$COACHES_FN_NAME" --region "$REGION"
+  echo "  Coaches Lambda updated: $COACHES_FN_NAME"
+else
+  echo "  WARNING: Could not find coaches Lambda"
+fi
+
 # 2. Grant Cognito permission to invoke the auth Lambda
 echo "Adding Cognito invoke permission..."
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)

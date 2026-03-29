@@ -35,11 +35,40 @@ function ManageCoachesContent() {
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({
     name: "", certificationLevel: "CALC", location: "",
-    contactInfo: "", bio: "",
+    contactInfo: "", bio: "", email: "", password: "",
   });
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
+  const [editingId, setEditingId] = useState("");
+
+  const handleEdit = (c: Coach) => {
+    setEditingId(c.coachId);
+    setForm({
+      name: c.name, certificationLevel: c.certificationLevel,
+      location: c.location, contactInfo: c.contactInfo, bio: c.bio,
+      email: "", password: "",
+    });
+    setShowForm(true);
+  };
+
+  const handleDelete = async (coachId: string, name: string) => {
+    if (!confirm(`Delete coach ${name}?`)) return;
+    setError(""); setSuccess("");
+    try {
+      const res = await fetch(`${API_URL}coaches/${coachId}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${user?.idToken}` },
+      });
+      if (res.ok) {
+        setSuccess(`Coach ${name} removed.`);
+        await fetchCoaches();
+      } else {
+        const data = await res.json();
+        setError(data.error?.message ?? "Failed to delete coach.");
+      }
+    } catch { setError("Unable to reach server."); }
+  };
 
   const fetchCoaches = useCallback(async () => {
     try {
@@ -61,18 +90,27 @@ function ManageCoachesContent() {
     e.preventDefault();
     setCreating(true); setError(""); setSuccess("");
     try {
-      const res = await fetch(`${API_URL}coaches`, {
-        method: "POST",
+      const isEdit = !!editingId;
+      const url = isEdit ? `${API_URL}coaches/${editingId}` : `${API_URL}coaches`;
+      const method = isEdit ? "PUT" : "POST";
+      // For edits, only send fields allowed by COACH_UPDATE_SCHEMA
+      const payload = isEdit
+        ? { name: form.name, certificationLevel: form.certificationLevel, location: form.location, contactInfo: form.contactInfo, bio: form.bio }
+        : { ...form, chapterId };
+
+      const res = await fetch(url, {
+        method,
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${user?.idToken}` },
-        body: JSON.stringify({ ...form, chapterId }),
+        body: JSON.stringify(payload),
       });
       const data = await res.json();
       if (res.ok) {
-        setSuccess(`Coach ${form.name} added.`);
-        setForm({ name: "", certificationLevel: "CALC", location: "", contactInfo: "", bio: "" });
+        setSuccess(isEdit ? `Coach ${form.name} updated.` : `Coach ${form.name} added.`);
+        setForm({ name: "", certificationLevel: "CALC", location: "", contactInfo: "", bio: "", email: "", password: "" });
         setShowForm(false);
+        setEditingId("");
         await fetchCoaches();
-      } else { setError(data.error?.message ?? "Failed to add coach."); }
+      } else { setError(data.error?.message ?? `Failed to ${isEdit ? "update" : "add"} coach.`); }
     } catch { setError("Unable to reach server."); }
     finally { setCreating(false); }
   };
@@ -86,7 +124,7 @@ function ManageCoachesContent() {
           <h1 className="text-3xl font-bold text-wial-gray-900">{chapterName} Coaches</h1>
           <p className="mt-1 text-wial-gray-500">Manage coaches for your chapter</p>
         </div>
-        <button onClick={() => setShowForm(!showForm)} className="rounded-lg bg-wial-red px-4 py-2 text-sm font-semibold text-white hover:bg-wial-red-light">
+        <button onClick={() => { setShowForm(!showForm); setEditingId(""); setForm({ name: "", certificationLevel: "CALC", location: "", contactInfo: "", bio: "", email: "", password: "" }); }} className="rounded-lg bg-wial-red px-4 py-2 text-sm font-semibold text-white hover:bg-wial-red-light">
           {showForm ? "Cancel" : "+ Add Coach"}
         </button>
       </div>
@@ -110,8 +148,20 @@ function ManageCoachesContent() {
           </div>
           <label className="block"><span className="text-sm font-medium text-wial-gray-700">Bio *</span>
             <textarea required value={form.bio} onChange={(e) => setForm({ ...form, bio: e.target.value })} rows={3} className="mt-1 w-full rounded-lg border border-wial-gray-200 px-4 py-3 text-sm focus:border-wial-red focus:outline-none" /></label>
+          {!editingId && (
+            <div className="rounded-lg border border-wial-blue/20 bg-wial-blue/5 p-4">
+              <p className="text-sm font-medium text-wial-gray-700 mb-3">Coach Login Credentials (optional)</p>
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <label className="block"><span className="text-sm font-medium text-wial-gray-700">Email</span>
+                  <input type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} placeholder="coach@example.com" className="mt-1 w-full rounded-lg border border-wial-gray-200 px-4 py-2.5 text-sm focus:border-wial-red focus:outline-none" /></label>
+                <label className="block"><span className="text-sm font-medium text-wial-gray-700">Password</span>
+                  <input type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} placeholder="Min 12 chars" minLength={12} className="mt-1 w-full rounded-lg border border-wial-gray-200 px-4 py-2.5 text-sm focus:border-wial-red focus:outline-none" /></label>
+              </div>
+              <p className="mt-2 text-xs text-wial-gray-400">If provided, the coach can log in to view and manage their profile.</p>
+            </div>
+          )}
           <button type="submit" disabled={creating} className="rounded-lg bg-wial-red px-6 py-2.5 text-sm font-semibold text-white hover:bg-wial-red-light disabled:opacity-60">
-            {creating ? "Adding..." : "Add Coach"}</button>
+            {creating ? "Saving..." : editingId ? "Update Coach" : "Add Coach"}</button>
         </form>
       )}
 
@@ -127,6 +177,7 @@ function ManageCoachesContent() {
                   <th className="px-4 py-3 font-medium text-wial-gray-600">Level</th>
                   <th className="px-4 py-3 font-medium text-wial-gray-600">Location</th>
                   <th className="px-4 py-3 font-medium text-wial-gray-600">Contact</th>
+                  <th className="px-4 py-3 font-medium text-wial-gray-600">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-wial-gray-100">
@@ -136,6 +187,12 @@ function ManageCoachesContent() {
                     <td className="px-4 py-3"><CertBadge level={c.certificationLevel as CertificationLevel} /></td>
                     <td className="px-4 py-3 text-wial-gray-600">{c.location}</td>
                     <td className="px-4 py-3 text-wial-gray-600">{c.contactInfo}</td>
+                    <td className="px-4 py-3">
+                      <div className="flex gap-2">
+                        <button onClick={() => handleEdit(c)} className="rounded bg-wial-info/10 px-2 py-1 text-xs font-medium text-wial-info hover:bg-wial-info/20">Edit</button>
+                        <button onClick={() => handleDelete(c.coachId, c.name)} className="rounded bg-wial-error/10 px-2 py-1 text-xs font-medium text-wial-error hover:bg-wial-error/20">Delete</button>
+                      </div>
+                    </td>
                   </tr>
                 ))}
               </tbody>

@@ -151,6 +151,8 @@ COACH_SCHEMA: dict = {
     "properties": {
         "name": {"type": "string", "minLength": 1, "maxLength": 200},
         "chapterId": {"type": "string", "minLength": 1, "maxLength": 100},
+        "email": {"type": "string", "format": "email", "maxLength": 254},
+        "password": {"type": "string", "minLength": 12, "maxLength": 128},
         "photoUrl": {"type": "string", "maxLength": 2048},
         "certificationLevel": {"type": "string", "enum": VALID_CERTIFICATION_LEVELS},
         "location": {"type": "string", "minLength": 1, "maxLength": 200},
@@ -166,6 +168,7 @@ COACH_UPDATE_SCHEMA: dict = {
     "properties": {
         "name": {"type": "string", "minLength": 1, "maxLength": 200},
         "photoUrl": {"type": "string", "maxLength": 2048},
+        "certificationLevel": {"type": "string", "enum": VALID_CERTIFICATION_LEVELS},
         "location": {"type": "string", "minLength": 1, "maxLength": 200},
         "contactInfo": {"type": "string", "minLength": 1, "maxLength": 500},
         "bio": {"type": "string", "minLength": 1, "maxLength": 5000},
